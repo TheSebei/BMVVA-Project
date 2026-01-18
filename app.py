@@ -8,8 +8,9 @@ st.title("UK Road Accidents")
 
 DATA_PATH = "Road_Accident_Data.parquet"
 
-# Use canvas instead of SVG for much faster point rendering
+# canvas instead of SVG for much faster point rendering
 alt.renderers.set_embed_options(renderer="canvas")
+
 
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
@@ -17,6 +18,7 @@ def load_data(path: str) -> pd.DataFrame:
     df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
     df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
     return df.dropna(subset=["latitude", "longitude"])
+
 
 df = load_data(DATA_PATH)
 
@@ -87,16 +89,30 @@ st.sidebar.header("Encodings")
 
 all_cols = list(df_plot.columns)
 
-_default_color = (
+_default_map_color = (
     "accident_severity"
     if "accident_severity" in all_cols
     else ("day_of_week" if "day_of_week" in all_cols else all_cols[0])
 )
 
-color_field = st.sidebar.selectbox(
-    "Color",
+# Map + Bar colors
+map_color_field = st.sidebar.selectbox(
+    "Map & Bar: Color",
     options=all_cols,
-    index=all_cols.index(_default_color) if _default_color in all_cols else 0,
+    index=all_cols.index(_default_map_color) if _default_map_color in all_cols else 0,
+)
+
+# Pie colors (separate)
+_default_pie_color = (
+    "accident_severity"
+    if "accident_severity" in all_cols
+    else ("weather_conditions" if "weather_conditions" in all_cols else all_cols[0])
+)
+
+pie_color_field = st.sidebar.selectbox(
+    "Pie: Color",
+    options=all_cols,
+    index=all_cols.index(_default_pie_color) if _default_pie_color in all_cols else 0,
 )
 
 shape_options = ["(none)"] + all_cols
@@ -124,42 +140,80 @@ def _size_type(col: str) -> str:
     return "Q" if pd.api.types.is_numeric_dtype(df_plot[col]) else "O"
 
 
-# --- Accident points (with brushing) ---
+def _ordered_categories(field: str, series: pd.Series) -> list:
+    cats = series.dropna().unique().tolist()
+    if field == "accident_severity":
+        severity_order = ["slight", "serious", "fatal"]
+        return [c for c in severity_order if c in cats]
+    return cats
+
+
+def _color_scale_for(field: str, categories: list) -> alt.Scale:
+    # Keep severity palette; otherwise default Vega behavior.
+    if field == "accident_severity" and categories:
+        return alt.Scale(
+            domain=categories,
+            range=[
+                "#84c3ff",  # slight
+                "#627cf3",  # serious
+                "#E44848",  # fatal
+            ],
+        )
+    if len(categories) == 2:
+        return alt.Scale(domain=categories, range=["#e63946", "#0694d6"])
+    return alt.Scale(domain=categories)
+
+
+# --- Linked selections ---
+# Brush = spatial selection (select points on the map)
 brush = alt.selection_interval(name="brush")
 
-color_click = alt.selection_point(
-    fields=[color_field],
+# Selection on Map/Bar color field (click legend/category)
+sel_mapbar = alt.selection_point(
+    fields=[map_color_field],
     on="click",
     clear="dblclick",
-    name="color_click",
+    name="sel_mapbar",
 )
 
-enc = {
+# Selection on Pie color field (click slice)
+sel_pie = alt.selection_point(
+    fields=[pie_color_field],
+    on="click",
+    clear="dblclick",
+    name="sel_pie",
+)
+
+
+# --- Accident points (filtered by BOTH categorical selections, and brushed for opacity) ---
+enc_points = {
     "longitude": alt.Longitude("longitude:Q"),
     "latitude": alt.Latitude("latitude:Q"),
     "color": alt.Color(
-        f"{color_field}:{_vega_type(color_field)}",
-        legend=alt.Legend(title=color_field),
+        f"{map_color_field}:{_vega_type(map_color_field)}",
+        legend=alt.Legend(title=map_color_field),
     ),
 }
 
 if shape_field is not None:
-    enc["shape"] = alt.Shape(f"{shape_field}:N", legend=alt.Legend(title=shape_field))
+    enc_points["shape"] = alt.Shape(f"{shape_field}:N", legend=alt.Legend(title=shape_field))
 
 if size_field is not None:
-    enc["size"] = alt.Size(
+    enc_points["size"] = alt.Size(
         f"{size_field}:{_size_type(size_field)}",
         legend=alt.Legend(title=size_field),
     )
 
 # Build tooltip dynamically
 tooltip_fields = [
-    alt.Tooltip(f"{color_field}:{_vega_type(color_field)}", title=str(color_field)),
+    alt.Tooltip(f"{map_color_field}:{_vega_type(map_color_field)}", title=str(map_color_field)),
+    alt.Tooltip(f"{pie_color_field}:{_vega_type(pie_color_field)}", title=str(pie_color_field)),
 ]
 if shape_field is not None:
     tooltip_fields.append(alt.Tooltip(f"{shape_field}:N", title=str(shape_field)))
 if size_field is not None:
     tooltip_fields.append(alt.Tooltip(f"{size_field}:{_size_type(size_field)}", title=str(size_field)))
+
 tooltip_fields += [
     alt.Tooltip("latitude:Q", format=".4f"),
     alt.Tooltip("longitude:Q", format=".4f"),
@@ -167,10 +221,11 @@ tooltip_fields += [
 
 points = (
     alt.Chart(df_plot)
-    .transform_filter(color_click)
+    .transform_filter(sel_mapbar)
+    .transform_filter(sel_pie)
     .mark_point(filled=True)
     .encode(
-        **enc,
+        **enc_points,
         tooltip=tooltip_fields,
         opacity=alt.condition(brush, alt.value(point_opacity), alt.value(0.05)),
     )
@@ -183,75 +238,64 @@ chart = (
     .properties(height=650)
 )
 
-# --- Summary charts (grouped ONLY by color, filtered by brush) ---
-color_enc_field = f"{color_field}:{_vega_type(color_field)}"
-
-bar_categories = df_plot[color_field].dropna().unique().tolist()
-
-if color_field == "accident_severity":
-    severity_order = ["slight", "serious", "fatal"]
-    bar_categories = [c for c in severity_order if c in bar_categories]
-    bar_color_scale = alt.Scale(
-        domain=bar_categories,
-        range=[
-            "#84c3ff",
-            "#627cf3",
-            "#E44848",
-        ],
-    )
-elif len(bar_categories) == 2:
-    bar_color_scale = alt.Scale(domain=bar_categories, range=["#e63946", "#0694d6"])
-else:
-    bar_color_scale = alt.Scale(domain=bar_categories)
+# --- Bar chart (grouped by Map/Bar color field; filtered by brush + pie selection) ---
+bar_categories = _ordered_categories(map_color_field, df_plot[map_color_field])
+bar_color_scale = _color_scale_for(map_color_field, bar_categories)
 
 bar = (
     alt.Chart(df_plot)
     .transform_filter(brush)
+    .transform_filter(sel_pie)
     .mark_bar(size=12)
     .encode(
         x=alt.X("count():Q", title="Count"),
         y=alt.Y(
-            f"{color_field}:N",
-            title=str(color_field),
+            f"{map_color_field}:N",
+            title=str(map_color_field),
             scale=alt.Scale(domain=bar_categories, paddingInner=0.6),
         ),
         color=alt.Color(
-            f"{color_field}:N",
+            f"{map_color_field}:N",
             scale=bar_color_scale,
-            legend=alt.Legend(title=str(color_field)),
+            legend=alt.Legend(title=str(map_color_field)),
         ),
         tooltip=[
-            alt.Tooltip(f"{color_field}:N", title=str(color_field)),
+            alt.Tooltip(f"{map_color_field}:N", title=str(map_color_field)),
             alt.Tooltip("count():Q", title="Count", format=","),
         ],
-        opacity=alt.condition(color_click, alt.value(1.0), alt.value(0.35)),
+        opacity=alt.condition(sel_mapbar, alt.value(1.0), alt.value(0.35)),
     )
-    .add_params(color_click)
+    .add_params(sel_mapbar)
     .properties(height=220)
 )
+
+# --- Pie chart (grouped by Pie color field; filtered by brush + map/bar selection) ---
+pie_categories = _ordered_categories(pie_color_field, df_plot[pie_color_field])
+pie_color_scale = _color_scale_for(pie_color_field, pie_categories)
 
 pie = (
     alt.Chart(df_plot)
     .transform_filter(brush)
-    .transform_aggregate(count="count()", groupby=[color_field])
+    .transform_filter(sel_mapbar)
+    .transform_aggregate(count="count()", groupby=[pie_color_field])
     .transform_joinaggregate(total="sum(count)")
     .transform_calculate(percent="datum.count / datum.total")
     .mark_arc()
     .encode(
         theta=alt.Theta("count:Q", stack=True),
         color=alt.Color(
-            f"{color_field}:N",
-            scale=bar_color_scale,
-            legend=alt.Legend(title=str(color_field)),
+            f"{pie_color_field}:N",
+            scale=pie_color_scale,
+            legend=alt.Legend(title=str(pie_color_field)),
         ),
         tooltip=[
-            alt.Tooltip(f"{color_field}:N", title=str(color_field)),
+            alt.Tooltip(f"{pie_color_field}:N", title=str(pie_color_field)),
             alt.Tooltip("count:Q", title="Count", format=","),
             alt.Tooltip("percent:Q", title="Percent", format=".1%"),
         ],
-        opacity=alt.condition(color_click, alt.value(1.0), alt.value(0.4)),
+        opacity=alt.condition(sel_pie, alt.value(1.0), alt.value(0.4)),
     )
-    .add_params(color_click)
+    .add_params(sel_pie)
     .properties(height=420, width=300)
 )
 
@@ -262,12 +306,14 @@ left_panel = alt.vconcat(
     spacing=10,
 )
 
-combined = alt.hconcat(
-    left_panel,
-    pie,
-    spacing=15,
-).resolve_scale(
-    color="independent"
+combined = (
+    alt.hconcat(
+        left_panel,
+        pie,
+        spacing=15,
+    )
+    # Keep separate legends/scales since the pie can use a different field.
+    .resolve_scale(color="independent")
 )
 
 # Center the charts in the page using Streamlit columns
