@@ -104,8 +104,8 @@ map_color_field = st.sidebar.selectbox(
 
 # Pie colors (separate)
 _default_pie_color = (
-    "accident_severity"
-    if "accident_severity" in all_cols
+    "day_of_week"
+    if "day_of_week" in all_cols
     else ("weather_conditions" if "weather_conditions" in all_cols else all_cols[0])
 )
 
