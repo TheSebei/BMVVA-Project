@@ -7,8 +7,6 @@ st.title("UK Road Accidents")
 
 DATA_PATH = "Road_Accident_Data.parquet"
 
-alt.data_transformers.disable_max_rows()
-
 # canvas instead of SVG for much faster point rendering
 alt.renderers.set_embed_options(renderer="canvas")
 
@@ -27,7 +25,7 @@ df = load_data(DATA_PATH)
 max_available = len(df)
 
 default_n = min(1_000, max_available)
-step_n = 1_000 if max_available <= 200_000 else 5_000
+step_n = 1_000
 
 n_points = st.slider(
     "Number of accidents to plot (random sample)",
