@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import altair as alt
@@ -145,6 +144,20 @@ def _ordered_categories(field: str, series: pd.Series) -> list:
     if field == "accident_severity":
         severity_order = ["slight", "serious", "fatal"]
         return [c for c in severity_order if c in cats]
+    if field == "day_of_week":
+        dow_order = [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+        ]
+        # Keep only those present; append any extras at the end.
+        ordered = [d for d in dow_order if d in cats]
+        extras = [d for d in cats if d not in ordered]
+        return ordered + extras
     return cats
 
 
@@ -196,7 +209,9 @@ enc_points = {
 }
 
 if shape_field is not None:
-    enc_points["shape"] = alt.Shape(f"{shape_field}:N", legend=alt.Legend(title=shape_field))
+    enc_points["shape"] = alt.Shape(
+        f"{shape_field}:N", legend=alt.Legend(title=shape_field)
+    )
 
 if size_field is not None:
     enc_points["size"] = alt.Size(
@@ -212,7 +227,9 @@ tooltip_fields = [
 if shape_field is not None:
     tooltip_fields.append(alt.Tooltip(f"{shape_field}:N", title=str(shape_field)))
 if size_field is not None:
-    tooltip_fields.append(alt.Tooltip(f"{size_field}:{_size_type(size_field)}", title=str(size_field)))
+    tooltip_fields.append(
+        alt.Tooltip(f"{size_field}:{_size_type(size_field)}", title=str(size_field))
+    )
 
 tooltip_fields += [
     alt.Tooltip("latitude:Q", format=".4f"),
@@ -299,6 +316,66 @@ pie = (
     .properties(height=420, width=300)
 )
 
+# --- Temporal exploration heatmap (Day of week vs time of day) ---
+# Try to find a usable time-of-day column; if none is found, we derive hour from a typical "time" string.
+_time_candidates = [
+    "hour",
+    "accident_hour",
+    "time_of_day",
+    "time",
+    "accident_time",
+]
+TIME_COL = next((c for c in _time_candidates if c in all_cols), None)
+
+have_day_of_week = "day_of_week" in all_cols
+
+if TIME_COL is not None and have_day_of_week:
+    # If TIME_COL is already numeric (e.g., hour 0..23) use it directly; otherwise attempt to extract HH.
+    is_time_numeric = pd.api.types.is_numeric_dtype(df_plot[TIME_COL])
+
+    calc_hour = (
+        f"datum['{TIME_COL}']"
+        if is_time_numeric
+        else f"toNumber(slice(datum['{TIME_COL}'], 0, 2))"
+    )
+
+    dow_domain = _ordered_categories("day_of_week", df_plot["day_of_week"])
+
+    temporal_heatmap = (
+        alt.Chart(df_plot, title="Day of week × time of day")
+        .transform_filter(brush)
+        .transform_filter(sel_mapbar)
+        .transform_filter(sel_pie)
+        .transform_calculate(hour=calc_hour)
+        .mark_rect()
+        .encode(
+            x=alt.X(
+                "hour:O",
+                title="Hour of day",
+                sort=list(range(24)),
+            ),
+            y=alt.Y(
+                "day_of_week:N",
+                title="Day of week",
+                scale=alt.Scale(domain=dow_domain),
+            ),
+            color=alt.Color("count():Q", title="Count"),
+            tooltip=[
+                alt.Tooltip("day_of_week:N", title="Day"),
+                alt.Tooltip("hour:O", title="Hour"),
+                alt.Tooltip("count():Q", title="Count", format=","),
+            ],
+        )
+        .properties(height=220, width=300)
+    )
+else:
+    temporal_heatmap = (
+        alt.Chart(pd.DataFrame({"note": ["Missing day_of_week or time column to build heatmap."]}))
+        .mark_text(align="left")
+        .encode(text="note:N")
+        .properties(height=220, width=300)
+    )
+
 # --- Layout ---
 left_panel = alt.vconcat(
     chart,
@@ -306,10 +383,16 @@ left_panel = alt.vconcat(
     spacing=10,
 )
 
+right_panel = alt.vconcat(
+    pie,
+    temporal_heatmap,
+    spacing=15,
+)
+
 combined = (
     alt.hconcat(
         left_panel,
-        pie,
+        right_panel,
         spacing=15,
     )
     # Keep separate legends/scales since the pie can use a different field.
