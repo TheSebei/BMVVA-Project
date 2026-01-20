@@ -378,28 +378,29 @@ else:
 
 # --- Layout ---
 left_panel = alt.vconcat(
-    chart,
-    bar,
-    spacing=10,
+chart,
+bar,
+spacing=10,
 )
+
 
 right_panel = alt.vconcat(
-    pie,
-    temporal_heatmap,
-    spacing=15,
+pie,
+temporal_heatmap,
+spacing=15,
 )
+
 
 combined = (
-    alt.hconcat(
-        left_panel,
-        right_panel,
-        spacing=15,
-    )
-    # Keep separate legends/scales since the pie can use a different field.
-    .resolve_scale(color="independent")
+alt.hconcat(
+left_panel,
+right_panel,
+spacing=15,
+)
+# Keep separate legends/scales since the pie can use a different field.
+.resolve_scale(color="independent")
 )
 
-# Center the charts in the page using Streamlit columns
-col_left, col_center, col_right = st.columns([1, 3, 1])
-with col_center:
-    st.altair_chart(combined, use_container_width=True)
+
+# Render charts full-width (no centering columns)
+st.altair_chart(combined, use_container_width=True)
