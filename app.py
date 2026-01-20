@@ -7,6 +7,8 @@ st.title("UK Road Accidents")
 
 DATA_PATH = "Road_Accident_Data.parquet"
 
+alt.data_transformers.disable_max_rows()
+
 # canvas instead of SVG for much faster point rendering
 alt.renderers.set_embed_options(renderer="canvas")
 
